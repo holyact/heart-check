@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>스마트 심박수 측정기</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @keyframes heartbeat {
+            0% { transform: scale(1); }
+            15% { transform: scale(1.2); }
+            30% { transform: scale(1); }
+            45% { transform: scale(1.15); }
+            60% { transform: scale(1); }
+        }
+        .animate-beat { animation: heartbeat 0.6s ease-in-out; }
+        
+        /* 다크모드 대응 테마 클래스 */
+        .theme-dark { background-color: #0f172a; color: white; }
+        .theme-dark .card { background-color: #1e293b; border-color: #334155; }
+        .theme-dark .text-secondary { color: #94a3b8; }
+        .theme-dark .bg-surface { background-color: #020617; border-color: #334155; }
+
+        .theme-light { background-color: #f1f5f9; color: #1e293b; }
+        .theme-light .card { background-color: #ffffff; border-color: #e2e8f0; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1); }
+        .theme-light .text-secondary { color: #64748b; }
+        .theme-light .bg-surface { background-color: #f8fafc; border-color: #e2e8f0; }
+        
+        body { font-family: 'Inter', sans-serif; transition: background-color 0.3s, color 0.3s; }
+    </style>
+</head>
+<body class="theme-dark min-h-screen flex flex-col items-center justify-center p-4">
+
+    <div id="appContainer" class="max-w-md w-full card rounded-3xl p-6 border transition-all duration-300">
+        <div class="flex justify-between items-center mb-6">
+            <h1 class="text-xl font-bold">심박수 측정기</h1>
+            <button id="themeToggle" class="p-2 rounded-full hover:bg-opacity-20 transition-all">
+                <span id="themeIcon">☀️</span>
+            </button>
+        </div>
+        
+        <p class="text-secondary text-sm text-center mb-6">카메라 렌즈에 손가락을 대고 10초간 기다리세요.</p>
+
+        <div class="relative w-full aspect-square bg-surface rounded-2xl overflow-hidden mb-6 flex flex-col items-center justify-center border-2 transition-colors">
+            <video id="video" class="absolute w-full h-full object-cover hidden" playsinline></video>
+            
+            <div id="heartIcon" class="transition-transform duration-100 ease-out z-10">
+                <svg class="w-24 h-24 text-rose-500" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>
+                </svg>
+            </div>
+
+            <div id="resultDisplay" class="absolute bottom-10 z-10">
+                <div class="text-5xl font-black" id="bpmValue">--</div>
+                <div class="text-secondary text-xs text-center font-medium">BPM</div>
+            </div>
+        </div>
+
+        <div class="w-full h-24 bg-surface rounded-xl overflow-hidden border transition-colors mb-6">
+            <canvas id="waveformCanvas" class="w-full h-full"></canvas>
+        </div>
+
+        <button id="startBtn" class="w-full py-4 bg-rose-500 hover:bg-rose-600 text-white font-bold rounded-xl transition-all shadow-lg shadow-rose-500/30">측정 시작</button>
+        <button id="demoBtn" class="w-full py-4 bg-indigo-500 hover:bg-indigo-600 text-white font-bold rounded-xl transition-all mt-2">데모 모드 테스트</button>
+        <button id="stopBtn" class="hidden w-full py-4 bg-slate-500 hover:bg-slate-600 text-white font-bold rounded-xl transition-all mt-2">중지</button>
+    </div>
+
+    <script>
+        const video = document.getElementById('video');
+        const waveCanvas = document.getElementById('waveformCanvas');
+        const waveCtx = waveCanvas.getContext('2d');
+        const heartIcon = document.getElementById('heartIcon');
+        const bpmValue = document.getElementById('bpmValue');
+        const themeToggle = document.getElementById('themeToggle');
+        const appContainer = document.body;
+
+        let redValues = [];
+        let peaks = [];
+        let isMeasuring = false;
+        let isDemoMode = false;
+        let currentTheme = 'dark';
+
+        themeToggle.addEventListener('click', () => {
+            currentTheme = currentTheme === 'dark' ? 'light' : 'dark';
+            appContainer.className = `theme-${currentTheme} min-h-screen flex flex-col items-center justify-center p-4 transition-colors duration-300`;
+            document.getElementById('themeIcon').textContent = currentTheme === 'dark' ? '☀️' : '🌙';
+        });
+
+        function drawWaveform() {
+            waveCtx.clearRect(0, 0, waveCanvas.width, waveCanvas.height);
+            waveCtx.strokeStyle = currentTheme === 'dark' ? '#f43f5e' : '#e11d48';
+            waveCtx.lineWidth = 3;
+            waveCtx.lineJoin = 'round';
+            waveCtx.beginPath();
+            
+            const sliceWidth = waveCanvas.width / (redValues.length || 1);
+            let x = 0;
+
+            for (let i = 0; i < redValues.length; i++) {
+                const y = (redValues[i] / 255) * waveCanvas.height;
+                if (i === 0) waveCtx.moveTo(x, y);
+                else waveCtx.lineTo(x, y);
+                x += sliceWidth;
+            }
+            waveCtx.stroke();
+        }
+
+        async function process() {
+            if (!isMeasuring) return;
+
+            let val;
+            if (isDemoMode) {
+                // 부드러운 사인파 생성
+                val = 128 + 40 * Math.sin(Date.now() * 0.015);
+            } else {
+                val = 128; 
+            }
+
+            redValues.push(val);
+            if (redValues.length > 100) redValues.shift();
+            
+            drawWaveform();
+
+            // 피크 감지 로직 (디바운스 추가)
+            const avg = redValues.reduce((a, b) => a + b, 0) / redValues.length;
+            if (val > avg + 10) {
+                const now = Date.now();
+                if (peaks.length === 0 || (now - peaks[peaks.length - 1] > 600)) {
+                    peaks.push(now);
+                    heartIcon.classList.remove('animate-beat');
+                    void heartIcon.offsetWidth; 
+                    heartIcon.classList.add('animate-beat');
+                }
+            }
+
+            const now = Date.now();
+            peaks = peaks.filter(p => now - p < 10000);
+            if (peaks.length > 2) {
+                bpmValue.textContent = Math.round((peaks.length / 10) * 60);
+            }
+
+            requestAnimationFrame(process);
+        }
+
+        document.getElementById('startBtn').addEventListener('click', () => {
+            isDemoMode = false;
+            startProcess();
+        });
+
+        document.getElementById('demoBtn').addEventListener('click', () => {
+            isDemoMode = true;
+            startProcess();
+        });
+
+        function startProcess() {
+            waveCanvas.width = waveCanvas.offsetWidth;
+            waveCanvas.height = waveCanvas.offsetHeight;
+            isMeasuring = true;
+            document.getElementById('startBtn').classList.add('hidden');
+            document.getElementById('demoBtn').classList.add('hidden');
+            document.getElementById('stopBtn').classList.remove('hidden');
+            process();
+        }
+
+        document.getElementById('stopBtn').addEventListener('click', () => {
+            isMeasuring = false;
+            document.getElementById('startBtn').classList.remove('hidden');
+            document.getElementById('demoBtn').classList.remove('hidden');
+            document.getElementById('stopBtn').classList.add('hidden');
+            bpmValue.textContent = "--";
+            peaks = [];
+            redValues = [];
+        });
+    </script>
+</body>
+</html>
